@@ -1,0 +1,5 @@
+[phases.setup]
+# "..." mantém os pacotes padrão do provider + adiciona os seus
+nixPkgs = ["...", "ffmpeg"]
+# Se preferir APT em vez de Nix (não recomendado), use:
+# aptPkgs = ["...", "ffmpeg"]
