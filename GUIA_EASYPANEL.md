@@ -18,12 +18,19 @@ Repositório GitHub atualizado: **https://github.com/leandrobosaipo/reframe-endp
 
 ### **PASSO 2: Configuração do Build** (1 min)
 
-O Easypanel detectará automaticamente:
+O Easypanel pode usar **2 métodos**:
+
+#### Método 1: Dockerfile (Recomendado) ✅
+- ✅ `Dockerfile` - Deploy com Docker customizado
+- Instala FFmpeg e dependências do OpenCV
+- Mais controle sobre o ambiente
+
+#### Método 2: Nixpacks (Automático)
 - ✅ `Procfile` - Configuração do Gunicorn
 - ✅ `nixpacks.toml` - Instalação do FFmpeg
-- ✅ `requirements.txt` - Instalação das dependências Python
+- ✅ `requirements.txt` - Dependências Python
 
-**Nenhuma configuração adicional necessária!**
+**O Easypanel detectará automaticamente o Dockerfile e o usará preferencialmente!**
 
 ### **PASSO 3: Variáveis de Ambiente** (5 min) ⚠️ **CRÍTICO**
 

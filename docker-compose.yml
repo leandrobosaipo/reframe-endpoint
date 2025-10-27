@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  reframe-endpoint:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reframe-endpoint
+    ports:
+      - "8080:8080"
+    environment:
+      # DigitalOcean Spaces
+      - SPACES_REGION=${SPACES_REGION:-nyc3}
+      - SPACES_ENDPOINT=${SPACES_ENDPOINT:-https://nyc3.digitaloceanspaces.com}
+      - SPACES_BUCKET=${SPACES_BUCKET:-cod5}
+      - SPACES_KEY=${SPACES_KEY}
+      - SPACES_SECRET=${SPACES_SECRET}
+      - SPACES_CDN_BASE=${SPACES_CDN_BASE:-}
+      
+      # Service Configuration
+      - MAX_WORKERS=${MAX_WORKERS:-2}
+      - OUTPUT_PREFIX=${OUTPUT_PREFIX:-reframes}
+      
+      # Port
+      - PORT=${PORT:-8080}
+    volumes:
+      # Persistir jobs temporários
+      - ./tmp:/tmp
+      # Persistir storage local
+      - ./storage:/app/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
