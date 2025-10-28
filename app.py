@@ -2,7 +2,7 @@
 import os, io, time, json, uuid, queue, threading, tempfile, shutil
 from urllib.parse import urlparse, unquote
 import requests
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, abort
 from reframe_mediapipe_falante_v7 import reframe_video
 from storage.spaces import upload_public, make_key
 
@@ -16,15 +16,34 @@ except ImportError:
 # -------- Config --------
 MAX_WORKERS   = int(os.getenv("MAX_WORKERS", "2"))   # quantos vídeos processar em paralelo
 OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "reframes")  # subpasta no Spaces
+API_TOKEN     = os.getenv("API_TOKEN")  # token para autenticação
 
 app = Flask(__name__)
+
+# -------- Autenticação --------
+@app.before_request
+def verificar_token():
+    """Verifica token de autenticação antes de cada request"""
+    # Pula verificação para endpoint de health check
+    if request.endpoint == 'root':
+        return
+    
+    # Se não há token configurado, pula verificação
+    if not API_TOKEN:
+        return
+    
+    # Verifica token no header
+    token = request.headers.get('X-Api-Token')
+    if token != API_TOKEN:
+        abort(401, description="Token de autenticação inválido ou ausente")
 
 # Memória da fila/estado (gravamos um snapshot em /tmp pra facilitar depuração)
 _jobs = {}
 _jobs_lock = threading.Lock()
 _q = queue.Queue()
 
-def _now():
+def _now() -> int:
+    """Retorna timestamp atual em segundos"""
     return int(time.time())
 
 # pesos dos estágios para % (aprox.)
@@ -36,27 +55,30 @@ STAGE_WEIGHTS = {
     "uploading":    0.10
 }
 
-def _progress_for(job):
-    stage = job.get("stage","queued")
+def _progress_for(job: dict) -> float:
+    """Calcula progresso percentual do job baseado no estágio atual"""
+    stage = job.get("stage", "queued")
     stage_prog = job.get("stage_progress", 0.0)
     done_before = 0.0
-    for k,v in STAGE_WEIGHTS.items():
-        if k == stage: break
+    for k, v in STAGE_WEIGHTS.items():
+        if k == stage: 
+            break
         done_before += v
-    return round(100.0 * (done_before + STAGE_WEIGHTS.get(stage,0.0)*max(0.0,min(1.0,stage_prog))), 1)
+    return round(100.0 * (done_before + STAGE_WEIGHTS.get(stage, 0.0) * max(0.0, min(1.0, stage_prog))), 1)
 
-def _save_job(job_id):
-    # snapshot em disco p/ auditoria simples
+def _save_job(job_id: str) -> None:
+    """Salva snapshot do job em disco para auditoria"""
     try:
         p = f"/tmp/job_{job_id}.json"
-        with open(p,"w") as f:
+        with open(p, "w") as f:
             json.dump(_jobs[job_id], f, ensure_ascii=False, indent=2)
-    except:
+    except Exception:
         pass
 
-def _set(job_id, **kw):
+def _set(job_id: str, **kwargs) -> None:
+    """Atualiza dados do job e recalcula progresso"""
     with _jobs_lock:
-        _jobs[job_id].update(kw)
+        _jobs[job_id].update(kwargs)
         _jobs[job_id]["progress"] = _progress_for(_jobs[job_id])
     _save_job(job_id)
 
@@ -121,11 +143,16 @@ def _download_to_tmp(input_url: str) -> str:
         f"(se for remoto, use http(s)://; se for file URL, use file:///caminho/absoluto)"
     )
 
-def _worker():
+def _worker() -> None:
+    """Worker thread que processa jobs da fila"""
     while True:
         job_id = _q.get()
         if job_id is None:  # sentinela para encerrar
             break
+        
+        in_path = None
+        tmp_out = None
+        
         try:
             job = _jobs[job_id]
             _set(job_id, stage="downloading", stage_progress=0.0, started_at=_now())
@@ -135,8 +162,11 @@ def _worker():
             _set(job_id, stage="downloading", stage_progress=1.0)
 
             # 2) reframe (com callback p/ progresso)
-            tmp_out = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-            def progress_cb(stage, progress, meta):
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_file:
+                tmp_out = tmp_file.name
+            
+            def progress_cb(stage: str, progress: float, meta: dict = None) -> None:
+                """Callback para atualizar progresso do reframe"""
                 if stage == "reframing":
                     _set(job_id, stage="reframing", stage_progress=float(progress), meta=meta)
                 elif stage == "muxing":
@@ -180,23 +210,25 @@ def _worker():
                         "output_key": key,
                         "metrics": metrics
                     }, timeout=10)
-                except:
+                except Exception:
                     pass
 
         except Exception as e:
             _set(job_id, status="error", error=str(e), stage="error")
         finally:
-            # limpa temporários se foram criados no download
+            # Limpa arquivos temporários usando context managers
             try:
-                if 'in_path' in locals() and not job["input_url"].startswith("file://") and not os.path.exists(job["input_url"]):
+                if in_path and not job["input_url"].startswith("file://") and not os.path.exists(job["input_url"]):
                     if os.path.isfile(in_path) and os.path.dirname(in_path).startswith("/var/folders/"):
                         os.remove(in_path)
-            except: pass
+            except Exception:
+                pass
 
             try:
-                if 'tmp_out' in locals() and os.path.isfile(tmp_out):
+                if tmp_out and os.path.isfile(tmp_out):
                     os.remove(tmp_out)
-            except: pass
+            except Exception:
+                pass
 
             _q.task_done()
 
@@ -208,11 +240,29 @@ for _ in range(MAX_WORKERS):
     _workers.append(t)
 
 @app.route("/")
-def root():
-    return jsonify({"service": "reframe-endpoint", "queue_size": _q.qsize(), "workers": len(_workers)})
+def root() -> tuple:
+    """Endpoint de health check - retorna status do serviço"""
+    return jsonify({
+        "service": "reframe-endpoint", 
+        "queue_size": _q.qsize(), 
+        "workers": len(_workers),
+        "version": "1.0.0"
+    })
 
 @app.route("/v1/video/reframe", methods=["POST"])
-def enqueue_reframe():
+def enqueue_reframe() -> tuple:
+    """
+    Enfileira um vídeo para reframe.
+    
+    Body JSON:
+    - input_url: URL do vídeo (http/https/file) ou caminho local
+    - input_path: caminho local alternativo
+    - callback_url: URL opcional para callback quando concluído
+    
+    Returns:
+    - 202: Job enfileirado com sucesso
+    - 400: Dados inválidos
+    """
     data = request.get_json(force=True, silent=True) or {}
     input_url = data.get("input_url")
     input_path = data.get("input_path")  # novo: permite caminho local puro
@@ -235,7 +285,7 @@ def enqueue_reframe():
             "job_id": job_id,
             "created_at": _now(),
             "status": "queued",
-            "stage":  "queued",
+            "stage": "queued",
             "stage_progress": 0.0,
             "progress": 0.0,
             "input_url": input_url,

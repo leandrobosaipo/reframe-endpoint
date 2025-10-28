@@ -2,11 +2,12 @@
 FROM python:3.11-slim
 
 # Instalar dependências do sistema (FFmpeg e OpenCV)
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    libgl1-mesa-glx \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
