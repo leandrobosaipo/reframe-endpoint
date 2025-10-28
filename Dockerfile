@@ -10,13 +10,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Atualiza e instala dependências do sistema
 # Inclui libs necessárias para OpenCV, FFmpeg e renderização de vídeo
+# Compatível com Debian Trixie (python:3.11-slim)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
         libsm6 \
         libxext6 \
-        libxrender-dev \
-        libgl1-mesa-glx \
+        libxrender1 \
+        libgl1 \
         libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -45,5 +46,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8080/', timeout=5)"
 
-# Comando de inicialização com Gunicorn (padrão para produção)
+# Comando de inicialização com Gunicorn (padrão para produção Flask)
 CMD ["gunicorn", "-w", "1", "-k", "sync", "-b", "0.0.0.0:8080", "--timeout", "600", "app:app"]
