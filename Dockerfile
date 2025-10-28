@@ -15,8 +15,8 @@ RUN apt-get update && \
         ffmpeg \
         libsm6 \
         libxext6 \
-        libxrender1 \
-        libgl1 \
+        libxrender-dev \
+        libgl1-mesa-glx \
         libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -33,12 +33,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Define variáveis de ambiente padrões
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
 ENV MAX_WORKERS=2
 ENV OUTPUT_PREFIX=reframes
 
-# Define porta padrão (ajuste se necessário)
-EXPOSE 8000
+# Define porta padrão (compatível com Easypanel)
+EXPOSE 8080
 
-# Comando padrão de execução
-# (ajuste conforme o nome do arquivo principal Python)
-CMD ["python", "main.py"]
+# Healthcheck para monitoramento
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8080/', timeout=5)"
+
+# Comando de inicialização com Gunicorn (padrão para produção)
+CMD ["gunicorn", "-w", "1", "-k", "sync", "-b", "0.0.0.0:8080", "--timeout", "600", "app:app"]
