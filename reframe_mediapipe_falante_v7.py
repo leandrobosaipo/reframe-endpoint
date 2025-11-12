@@ -10,6 +10,53 @@ from collections import deque
 
 mp_face_mesh = mp.solutions.face_mesh
 
+# Parâmetros de suavização configuráveis
+DEAD_ZONE_THRESHOLD_X = 0.03  # 3% da largura do frame
+DEAD_ZONE_THRESHOLD_Y = 0.03  # 3% da altura do frame
+SMOOTH_ALPHA = 0.08  # Reduzido de 0.12 para suavização mais lenta
+CENTER_HISTORY_SIZE = 5  # Número de centros para média ponderada
+
+def _apply_dead_zone(centro_detectado, centro_atual, width, height):
+    """
+    Aplica zona morta: só retorna novo centro se a diferença exceder threshold.
+    Retorna o centro a usar (pode ser o atual se dentro da zona morta).
+    """
+    dx = abs(centro_detectado[0] - centro_atual[0])
+    dy = abs(centro_detectado[1] - centro_atual[1])
+    
+    threshold_x = width * DEAD_ZONE_THRESHOLD_X
+    threshold_y = height * DEAD_ZONE_THRESHOLD_Y
+    
+    # Se a diferença for menor que o threshold, mantém o centro atual
+    if dx < threshold_x and dy < threshold_y:
+        return centro_atual
+    
+    return centro_detectado
+
+def _smooth_center(centro_detectado, centro_history, width, height):
+    """
+    Aplica média ponderada dos últimos centros detectados.
+    Centros mais recentes têm peso maior.
+    Retorna o centro suavizado e o histórico atualizado.
+    """
+    # Adiciona o novo centro ao histórico
+    centro_history.append(centro_detectado)
+    
+    if len(centro_history) == 1:
+        return centro_detectado
+    
+    # Calcula média ponderada (centros mais recentes têm peso maior)
+    total_weight = 0.0
+    weighted_sum = np.array([0.0, 0.0])
+    
+    for i, centro in enumerate(centro_history):
+        weight = (i + 1) / len(centro_history)  # Peso crescente
+        total_weight += weight
+        weighted_sum += np.array(centro) * weight
+    
+    centro_suavizado = weighted_sum / total_weight
+    return tuple(centro_suavizado)
+
 def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile):
     """
     Detecta rostos usando Haar Cascades como fallback.
@@ -88,6 +135,7 @@ def reframe_video(input_path: str,
     centro_atual  = (width // 2, height // 2)
     centro_antigo = np.array(centro_atual)
     centro_fallback = None  # rosto inicial para fallback quando não há falante detectado
+    centro_history = deque(maxlen=CENTER_HISTORY_SIZE)  # Histórico para suavização
 
     faces_detected_sum = 0
 
@@ -132,7 +180,12 @@ def reframe_video(input_path: str,
                 # fallback para rosto mais próximo do centro horizontal
                 idx = np.argmin([abs(c[0][0] - width//2) for c in candidatos])
 
-            centro_atual = candidatos[idx][0]
+            centro_detectado = candidatos[idx][0]
+            # Aplica zona morta para evitar movimentos pequenos
+            centro_detectado = _apply_dead_zone(centro_detectado, centro_atual, width, height)
+            # Aplica média ponderada dos últimos centros
+            centro_detectado = _smooth_center(centro_detectado, centro_history, width, height)
+            centro_atual = centro_detectado
         else:
             # Fallback: tenta detectar rostos usando Haar Cascades quando MediaPipe falha
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -155,15 +208,17 @@ def reframe_video(input_path: str,
                 if centro_fallback is None:
                     centro_fallback = np.array(centro_haar)
                 
-                # Usa o centro detectado pelo Haar
+                # Aplica zona morta e suavização antes de usar o centro detectado pelo Haar
+                centro_haar = _apply_dead_zone(centro_haar, centro_atual, width, height)
+                centro_haar = _smooth_center(centro_haar, centro_history, width, height)
                 centro_atual = centro_haar
             elif centro_fallback is not None:
                 # Quando não há rostos detectados por nenhum método, usa centro_fallback
                 centro_atual = tuple(centro_fallback)
             # Se não há fallback definido ainda, mantém centro_atual (que pode ser o centro da tela inicialmente)
 
-        # suavização do corte
-        centro_atual = centro_antigo + 0.12 * (np.array(centro_atual) - np.array(centro_antigo))
+        # suavização final do corte (interpolação exponencial)
+        centro_atual = centro_antigo + SMOOTH_ALPHA * (np.array(centro_atual) - np.array(centro_antigo))
         centro_antigo = np.array(centro_atual)
 
         x, y = centro_atual
