@@ -172,7 +172,12 @@ def _worker() -> None:
                 elif stage == "muxing":
                     _set(job_id, stage="muxing", stage_progress=float(progress))
 
-            metrics = reframe_video(in_path, tmp_out, progress_cb=progress_cb)
+            debug_mode = job.get("debug", False)
+            debug_output_path = None
+            if debug_mode:
+                debug_output_path = f"/tmp/debug_{job_id}.mp4"
+            
+            metrics = reframe_video(in_path, tmp_out, progress_cb=progress_cb, debug=debug_mode, debug_output=debug_output_path)
 
             # 3) upload ao Spaces (ou salvar localmente se falhar)
             _set(job_id, stage="uploading", stage_progress=0.0)
@@ -190,14 +195,21 @@ def _worker() -> None:
                 key = f"local_{job_id}"
 
             # 4) finaliza
-            _set(job_id,
-                 status="done",
-                 stage="done",
-                 stage_progress=1.0,
-                 finished_at=_now(),
-                 output_key=key,
-                 output_url=url,
-                 metrics=metrics)
+            job_update = {
+                "status": "done",
+                "stage": "done",
+                "stage_progress": 1.0,
+                "finished_at": _now(),
+                "output_key": key,
+                "output_url": url,
+                "metrics": metrics
+            }
+            
+            # Se debug foi ativado e arquivo existe, adiciona ao job
+            if debug_mode and debug_output_path and os.path.exists(debug_output_path):
+                job_update["debug_output_local"] = debug_output_path
+            
+            _set(job_id, **job_update)
 
             # callback opcional
             cb = job.get("callback_url")
@@ -267,6 +279,7 @@ def enqueue_reframe() -> tuple:
     input_url = data.get("input_url")
     input_path = data.get("input_path")  # novo: permite caminho local puro
     callback_url = data.get("callback_url")
+    debug = data.get("debug", False)  # modo debug para gerar vídeo com overlays
 
     # Se veio input_path, converte automaticamente para file://
     if not input_url and input_path:
@@ -289,7 +302,8 @@ def enqueue_reframe() -> tuple:
             "stage_progress": 0.0,
             "progress": 0.0,
             "input_url": input_url,
-            "callback_url": callback_url
+            "callback_url": callback_url,
+            "debug": bool(debug)
         }
     _save_job(job_id)
     _q.put(job_id)
@@ -400,6 +414,32 @@ def download_video(job_id):
         })
     
     return jsonify({"error": "arquivo de saída não encontrado"}), 404
+
+@app.route("/v1/video/debug/<job_id>", methods=["GET"])
+def download_debug_video(job_id):
+    """
+    Baixa o arquivo de vídeo debug (se disponível).
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        # tenta ler snapshot
+        snap = f"/tmp/job_{job_id}.json"
+        if os.path.exists(snap):
+            with open(snap) as f:
+                job = json.load(f)
+                _jobs[job_id] = job
+        else:
+            return jsonify({"error": "job não encontrado"}), 404
+    
+    if job.get("status") != "done":
+        return jsonify({"error": "job ainda não foi concluído"}), 400
+    
+    debug_output = job.get("debug_output_local")
+    if debug_output and os.path.exists(debug_output):
+        return send_file(debug_output, as_attachment=True, 
+                        download_name=f"debug_{job_id}.mp4")
+    
+    return jsonify({"error": "vídeo debug não disponível. Certifique-se de que o job foi processado com debug=true"}), 404
 
 @app.route("/v1/test/upload", methods=["POST"])
 def test_upload():

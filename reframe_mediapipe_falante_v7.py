@@ -57,10 +57,29 @@ def _smooth_center(centro_detectado, centro_history, width, height):
     centro_suavizado = weighted_sum / total_weight
     return tuple(centro_suavizado)
 
+def _adjust_bbox_for_head(x, y, w, h):
+    """
+    Ajusta bounding box para focar apenas na cabeça, removendo área de ombros/mãos.
+    Retorna (x_head, y_head, w_head, h_head, centro_x, centro_y)
+    """
+    # Reduz altura: remove parte inferior (ombros/mãos) - mantém apenas 60% superior
+    h_head = int(h * 0.6)
+    y_head = y + int(h * 0.1)  # Move um pouco para cima
+    
+    # Reduz largura: foca no centro da cabeça - mantém 50% central
+    w_head = int(w * 0.5)
+    x_head = x + int(w * 0.25)  # Centraliza
+    
+    # Calcula centro da região da cabeça
+    centro_x = x_head + w_head // 2
+    centro_y = y_head + h_head // 2
+    
+    return (x_head, y_head, w_head, h_head, centro_x, centro_y)
+
 def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile):
     """
     Detecta rostos usando Haar Cascades como fallback.
-    Retorna lista de tuplas (centro_x, centro_y, largura, altura).
+    Retorna lista de tuplas (centro_x, centro_y, largura_cabeça, altura_cabeça, x_original, y_original, w_original, h_original).
     """
     faces = []
     
@@ -69,18 +88,16 @@ def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile):
         frame_gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
     )
     for (x, y, w, h) in frontal_faces:
-        centro_x = x + w // 2
-        centro_y = y + h // 2
-        faces.append((centro_x, centro_y, w, h))
+        x_head, y_head, w_head, h_head, centro_x, centro_y = _adjust_bbox_for_head(x, y, w, h)
+        faces.append((centro_x, centro_y, w_head, h_head, x, y, w, h))
     
     # Detecta rostos de perfil
     profile_faces = cascade_profile.detectMultiScale(
         frame_gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
     )
     for (x, y, w, h) in profile_faces:
-        centro_x = x + w // 2
-        centro_y = y + h // 2
-        faces.append((centro_x, centro_y, w, h))
+        x_head, y_head, w_head, h_head, centro_x, centro_y = _adjust_bbox_for_head(x, y, w, h)
+        faces.append((centro_x, centro_y, w_head, h_head, x, y, w, h))
     
     return faces
 
@@ -96,12 +113,78 @@ def _mux_audio(video_temp, source_with_audio, output_final):
         "-shortest", output_final
     ], check=True)
 
+def _draw_debug_overlays(frame, results, haar_faces, centro_atual, centro_detectado, width, height, debug_info=None):
+    """
+    Desenha overlays de debug no frame: bounding boxes, centros, landmarks.
+    """
+    frame_debug = frame.copy()
+    
+    # Desenha bounding boxes do MediaPipe
+    if results.multi_face_landmarks:
+        for landmarks in results.multi_face_landmarks:
+            pts = np.array([(lm.x * width, lm.y * height) for lm in landmarks.landmark])
+            # Bounding box do MediaPipe
+            x_min, y_min = int(pts[:, 0].min()), int(pts[:, 1].min())
+            x_max, y_max = int(pts[:, 0].max()), int(pts[:, 1].max())
+            cv2.rectangle(frame_debug, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+            
+            # Desenha alguns landmarks importantes
+            # Olhos
+            left_eye = pts[33]
+            right_eye = pts[263]
+            cv2.circle(frame_debug, (int(left_eye[0]), int(left_eye[1])), 3, (255, 0, 0), -1)
+            cv2.circle(frame_debug, (int(right_eye[0]), int(right_eye[1])), 3, (255, 0, 0), -1)
+            
+            # Boca (pontos usados para detecção de fala)
+            top_lip = np.mean(pts[[13, 14, 15, 16, 17]], axis=0)
+            bottom_lip = np.mean(pts[[308,312,317,402,318]], axis=0)
+            cv2.circle(frame_debug, (int(top_lip[0]), int(top_lip[1])), 3, (0, 0, 255), -1)
+            cv2.circle(frame_debug, (int(bottom_lip[0]), int(bottom_lip[1])), 3, (0, 0, 255), -1)
+    
+    # Desenha bounding boxes do Haar Cascade
+    for face_info in haar_faces:
+        cx, cy, w_head, h_head, x_orig, y_orig, w_orig, h_orig = face_info
+        # Bounding box original (verde claro)
+        cv2.rectangle(frame_debug, (x_orig, y_orig), (x_orig + w_orig, y_orig + h_orig), (0, 255, 255), 2)
+        # Bounding box ajustado para cabeça (azul)
+        x_head = int(cx - w_head/2)
+        y_head = int(cy - h_head/2)
+        cv2.rectangle(frame_debug, (x_head, y_head), (x_head + w_head, y_head + h_head), (255, 0, 255), 2)
+        # Centro da cabeça
+        cv2.circle(frame_debug, (int(cx), int(cy)), 5, (255, 0, 255), -1)
+    
+    # Desenha centro atual (usado para corte)
+    if centro_atual is not None:
+        centro_atual_tuple = tuple(centro_atual) if isinstance(centro_atual, np.ndarray) else centro_atual
+        cv2.circle(frame_debug, (int(centro_atual_tuple[0]), int(centro_atual_tuple[1])), 8, (0, 255, 255), 2)
+        cv2.putText(frame_debug, "CENTER", (int(centro_atual_tuple[0]) + 10, int(centro_atual_tuple[1])), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+    
+    # Desenha centro detectado (antes da suavização)
+    if centro_detectado is not None:
+        centro_detectado_tuple = tuple(centro_detectado) if isinstance(centro_detectado, np.ndarray) else centro_detectado
+        cv2.circle(frame_debug, (int(centro_detectado_tuple[0]), int(centro_detectado_tuple[1])), 5, (255, 255, 0), 2)
+    
+    # Informações de debug
+    if debug_info:
+        y_offset = 20
+        for key, value in debug_info.items():
+            cv2.putText(frame_debug, f"{key}: {value}", (10, y_offset), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            y_offset += 20
+    
+    return frame_debug
+
 def reframe_video(input_path: str,
                   output_path: str,
-                  progress_cb=None) -> dict:
+                  progress_cb=None,
+                  debug=False,
+                  debug_output=None) -> dict:
     """
     Reenquadra 16:9 -> 9:16 mantendo o falante principal.
     progress_cb(stage, progress, meta)  # progress: 0..1
+    debug: se True, gera vídeo com overlays de debug
+    debug_output: caminho para salvar vídeo debug (se debug=True)
     Retorna métricas para log.
     """
 
@@ -115,6 +198,11 @@ def reframe_video(input_path: str,
     crop_w = int(height * 9 / 16)
     tmp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
     out = cv2.VideoWriter(tmp_video, cv2.VideoWriter_fourcc(*'mp4v'), fps, (crop_w, crop_h))
+    
+    # VideoWriter para debug (vídeo completo com overlays)
+    out_debug = None
+    if debug and debug_output:
+        out_debug = cv2.VideoWriter(debug_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
 
     face_mesh = mp_face_mesh.FaceMesh(
         static_image_mode=False, max_num_faces=4, refine_landmarks=True,
@@ -151,6 +239,10 @@ def reframe_video(input_path: str,
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = face_mesh.process(rgb)
+        
+        # Variáveis para debug
+        centro_detectado_debug = None
+        haar_faces_debug = []
 
         candidatos = []
         if results.multi_face_landmarks:
@@ -185,6 +277,7 @@ def reframe_video(input_path: str,
                 idx = np.argmin([abs(c[0][0] - width//2) for c in candidatos])
 
             centro_detectado = candidatos[idx][0]
+            centro_detectado_debug = centro_detectado
             # Aplica zona morta para evitar movimentos pequenos
             centro_detectado = _apply_dead_zone(centro_detectado, centro_atual, width, height)
             # Aplica média ponderada dos últimos centros
@@ -194,19 +287,26 @@ def reframe_video(input_path: str,
             # Fallback: tenta detectar rostos usando Haar Cascades quando MediaPipe falha
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             haar_faces = _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile)
+            haar_faces_debug = haar_faces
             
             if haar_faces:
                 faces_detected_sum += len(haar_faces)
-                # Escolhe a maior face ou a mais próxima do centro horizontal
-                # Prioriza tamanho (largura * altura) e depois proximidade do centro
+                # Escolhe a melhor face focando na cabeça
+                # Prioriza aspect ratio de cabeça (mais vertical) e tamanho consistente
                 def score_face(face):
-                    cx, cy, w, h = face
-                    size_score = w * h
+                    cx, cy, w_head, h_head, x_orig, y_orig, w_orig, h_orig = face
+                    # Aspect ratio típico de cabeça (mais vertical = melhor)
+                    aspect_ratio = h_head / max(w_head, 1)
+                    aspect_score = aspect_ratio if aspect_ratio > 1.0 else 1.0 / aspect_ratio
+                    # Tamanho da cabeça (prioriza tamanhos médios)
+                    size_score = w_head * h_head
+                    # Proximidade do centro
                     center_score = 1.0 / (1.0 + abs(cx - width//2) / width)
-                    return size_score * (1.0 + center_score)
+                    return size_score * aspect_score * (1.0 + center_score)
                 
                 melhor_face = max(haar_faces, key=score_face)
                 centro_haar = (melhor_face[0], melhor_face[1])
+                centro_detectado_debug = centro_haar
                 
                 # Define centro_fallback se ainda não foi definido (primeiro frame com cabeça)
                 if centro_fallback is None:
@@ -238,11 +338,23 @@ def reframe_video(input_path: str,
         y1 = max(0, min(int(y - crop_h/2), height - crop_h))
         crop = frame[y1:y1+crop_h, x1:x1+crop_w]
         out.write(crop)
+        
+        # Gera vídeo debug se solicitado
+        if debug and out_debug:
+            debug_info = {
+                "Frame": i,
+                "Method": "MediaPipe" if results.multi_face_landmarks else ("Haar" if haar_faces_debug else "Fallback"),
+                "Faces": len(results.multi_face_landmarks) if results.multi_face_landmarks else len(haar_faces_debug)
+            }
+            frame_debug = _draw_debug_overlays(frame, results, haar_faces_debug, centro_atual, centro_detectado_debug, width, height, debug_info)
+            out_debug.write(frame_debug)
 
         if i % 50 == 0: report(i)
 
     cap.release()
     out.release()
+    if out_debug:
+        out_debug.release()
 
     # mux de áudio
     if progress_cb: progress_cb(stage="muxing", progress=0.0, meta={})
