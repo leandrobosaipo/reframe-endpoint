@@ -11,10 +11,32 @@ from collections import deque
 mp_face_mesh = mp.solutions.face_mesh
 
 # Parâmetros de suavização configuráveis
-DEAD_ZONE_THRESHOLD_X = 0.03  # 3% da largura do frame
-DEAD_ZONE_THRESHOLD_Y = 0.03  # 3% da altura do frame
-SMOOTH_ALPHA = 0.08  # Reduzido de 0.12 para suavização mais lenta
-CENTER_HISTORY_SIZE = 5  # Número de centros para média ponderada
+DEAD_ZONE_THRESHOLD_X = 0.05  # 5% da largura do frame (aumentado para reduzir movimentos pequenos)
+DEAD_ZONE_THRESHOLD_Y = 0.05  # 5% da altura do frame (aumentado para reduzir movimentos pequenos)
+SMOOTH_ALPHA = 0.05  # Reduzido para suavização ainda mais lenta
+CENTER_HISTORY_SIZE = 7  # Número de centros para média ponderada (aumentado para mais suavização)
+CENTER_OFFSET_Y = 0.05  # Offset vertical para focar acima do nariz (5% da altura)
+
+def _calculate_focused_center(landmarks, width, height):
+    """
+    Calcula centro focado acima do nariz usando landmarks específicos.
+    Usa nariz e olhos para posicionar o centro mais alto, evitando seguir movimentos da boca.
+    """
+    pts = np.array([(lm.x * width, lm.y * height) for lm in landmarks.landmark])
+    
+    # Landmarks importantes: nariz (1), olhos (33, 263), centro da testa (10)
+    nose_tip = pts[1]  # Ponta do nariz
+    left_eye = pts[33]  # Olho esquerdo
+    right_eye = pts[263]  # Olho direito
+    
+    # Calcula centro entre os olhos e nariz (mais estável que média de todos os pontos)
+    eye_center = (left_eye + right_eye) / 2
+    focused_center = (eye_center + nose_tip) / 2
+    
+    # Aplica offset vertical para focar acima do nariz
+    focused_center[1] -= height * CENTER_OFFSET_Y
+    
+    return focused_center
 
 def _apply_dead_zone(centro_detectado, centro_atual, width, height):
     """
@@ -57,9 +79,10 @@ def _smooth_center(centro_detectado, centro_history, width, height):
     centro_suavizado = weighted_sum / total_weight
     return tuple(centro_suavizado)
 
-def _adjust_bbox_for_head(x, y, w, h):
+def _adjust_bbox_for_head(x, y, w, h, height_frame):
     """
     Ajusta bounding box para focar apenas na cabeça, removendo área de ombros/mãos.
+    Aplica offset vertical para focar acima do nariz (similar ao MediaPipe).
     Retorna (x_head, y_head, w_head, h_head, centro_x, centro_y)
     """
     # Reduz altura: remove parte inferior (ombros/mãos) - mantém apenas 60% superior
@@ -74,9 +97,12 @@ def _adjust_bbox_for_head(x, y, w, h):
     centro_x = x_head + w_head // 2
     centro_y = y_head + h_head // 2
     
+    # Aplica offset vertical para focar acima do nariz (consistente com MediaPipe)
+    centro_y -= height_frame * CENTER_OFFSET_Y
+    
     return (x_head, y_head, w_head, h_head, centro_x, centro_y)
 
-def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile):
+def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile, height_frame):
     """
     Detecta rostos usando Haar Cascades como fallback.
     Retorna lista de tuplas (centro_x, centro_y, largura_cabeça, altura_cabeça, x_original, y_original, w_original, h_original).
@@ -88,7 +114,7 @@ def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile):
         frame_gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
     )
     for (x, y, w, h) in frontal_faces:
-        x_head, y_head, w_head, h_head, centro_x, centro_y = _adjust_bbox_for_head(x, y, w, h)
+        x_head, y_head, w_head, h_head, centro_x, centro_y = _adjust_bbox_for_head(x, y, w, h, height_frame)
         faces.append((centro_x, centro_y, w_head, h_head, x, y, w, h))
     
     # Detecta rostos de perfil
@@ -96,7 +122,7 @@ def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile):
         frame_gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
     )
     for (x, y, w, h) in profile_faces:
-        x_head, y_head, w_head, h_head, centro_x, centro_y = _adjust_bbox_for_head(x, y, w, h)
+        x_head, y_head, w_head, h_head, centro_x, centro_y = _adjust_bbox_for_head(x, y, w, h, height_frame)
         faces.append((centro_x, centro_y, w_head, h_head, x, y, w, h))
     
     return faces
@@ -252,7 +278,8 @@ def reframe_video(input_path: str,
                 top_lip    = np.mean(pts[[13, 14, 15, 16, 17]], axis=0)
                 bottom_lip = np.mean(pts[[308,312,317,402,318]], axis=0)
                 abertura   = float(np.linalg.norm(top_lip - bottom_lip))
-                centro     = np.mean(pts, axis=0)
+                # Usa centro focado acima do nariz em vez da média de todos os pontos
+                centro     = _calculate_focused_center(landmarks, width, height)
                 candidatos.append((centro, abertura))
 
             # Define centro_fallback no primeiro frame com rostos detectados
@@ -286,7 +313,7 @@ def reframe_video(input_path: str,
         else:
             # Fallback: tenta detectar rostos usando Haar Cascades quando MediaPipe falha
             frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            haar_faces = _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile)
+            haar_faces = _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile, height)
             haar_faces_debug = haar_faces
             
             if haar_faces:
