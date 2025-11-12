@@ -167,7 +167,11 @@ def reframe_video(input_path: str,
             if centro_fallback is None and candidatos:
                 # Escolhe o rosto mais próximo do centro horizontal como fallback
                 idx_fallback = np.argmin([abs(c[0][0] - width//2) for c in candidatos])
-                centro_fallback = np.array(candidatos[idx_fallback][0])
+                centro_fallback_raw = candidatos[idx_fallback][0]
+                # Aplica estabilização desde o primeiro frame
+                centro_fallback_stable = _apply_dead_zone(centro_fallback_raw, centro_atual, width, height)
+                centro_fallback_stable = _smooth_center(centro_fallback_stable, centro_history, width, height)
+                centro_fallback = np.array(centro_fallback_stable)
 
             max_faces = max(len(c) for c in [candidatos] + list(activity_hist)) if activity_hist else len(candidatos)
             atual = [a for _, a in candidatos] + [0.0] * (max_faces - len(candidatos))
@@ -204,17 +208,25 @@ def reframe_video(input_path: str,
                 melhor_face = max(haar_faces, key=score_face)
                 centro_haar = (melhor_face[0], melhor_face[1])
                 
-                # Define centro_fallback se ainda não foi definido
+                # Define centro_fallback se ainda não foi definido (primeiro frame com cabeça)
                 if centro_fallback is None:
-                    centro_fallback = np.array(centro_haar)
-                
-                # Aplica zona morta e suavização antes de usar o centro detectado pelo Haar
-                centro_haar = _apply_dead_zone(centro_haar, centro_atual, width, height)
-                centro_haar = _smooth_center(centro_haar, centro_history, width, height)
-                centro_atual = centro_haar
+                    # No primeiro frame, aplica estabilização desde o início
+                    centro_haar_stable = _apply_dead_zone(centro_haar, centro_atual, width, height)
+                    centro_haar_stable = _smooth_center(centro_haar_stable, centro_history, width, height)
+                    centro_fallback = np.array(centro_haar_stable)
+                    centro_atual = centro_haar_stable
+                else:
+                    # Aplica zona morta e suavização antes de usar o centro detectado pelo Haar
+                    centro_haar = _apply_dead_zone(centro_haar, centro_atual, width, height)
+                    centro_haar = _smooth_center(centro_haar, centro_history, width, height)
+                    centro_atual = centro_haar
             elif centro_fallback is not None:
                 # Quando não há rostos detectados por nenhum método, usa centro_fallback
-                centro_atual = tuple(centro_fallback)
+                # MAS aplica zona morta e suavização para evitar balanço
+                centro_fallback_tuple = tuple(centro_fallback)
+                centro_fallback_tuple = _apply_dead_zone(centro_fallback_tuple, centro_atual, width, height)
+                centro_fallback_tuple = _smooth_center(centro_fallback_tuple, centro_history, width, height)
+                centro_atual = centro_fallback_tuple
             # Se não há fallback definido ainda, mantém centro_atual (que pode ser o centro da tela inicialmente)
 
         # suavização final do corte (interpolação exponencial)
