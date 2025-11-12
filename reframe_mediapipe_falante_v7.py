@@ -250,6 +250,7 @@ def reframe_video(input_path: str,
     centro_antigo = np.array(centro_atual)
     centro_fallback = None  # rosto inicial para fallback quando não há falante detectado
     centro_history = deque(maxlen=CENTER_HISTORY_SIZE)  # Histórico para suavização
+    ultimo_falante_centro = None  # Último centro conhecido do falante (quando MediaPipe detectava)
 
     faces_detected_sum = 0
 
@@ -305,6 +306,8 @@ def reframe_video(input_path: str,
 
             centro_detectado = candidatos[idx][0]
             centro_detectado_debug = centro_detectado
+            # Salva o centro do falante identificado para usar em fallback futuro
+            ultimo_falante_centro = np.array(centro_detectado)
             # Aplica zona morta para evitar movimentos pequenos
             centro_detectado = _apply_dead_zone(centro_detectado, centro_atual, width, height)
             # Aplica média ponderada dos últimos centros
@@ -318,21 +321,26 @@ def reframe_video(input_path: str,
             
             if haar_faces:
                 faces_detected_sum += len(haar_faces)
-                # Escolhe a melhor face focando na cabeça
-                # Prioriza aspect ratio de cabeça (mais vertical) e tamanho consistente
-                def score_face(face):
-                    cx, cy, w_head, h_head, x_orig, y_orig, w_orig, h_orig = face
-                    # Aspect ratio típico de cabeça (mais vertical = melhor)
-                    aspect_ratio = h_head / max(w_head, 1)
-                    aspect_score = aspect_ratio if aspect_ratio > 1.0 else 1.0 / aspect_ratio
-                    # Tamanho da cabeça (prioriza tamanhos médios)
-                    size_score = w_head * h_head
-                    # Proximidade do centro
-                    center_score = 1.0 / (1.0 + abs(cx - width//2) / width)
-                    return size_score * aspect_score * (1.0 + center_score)
                 
-                melhor_face = max(haar_faces, key=score_face)
-                centro_haar = (melhor_face[0], melhor_face[1])
+                # Se há múltiplas cabeças, prioriza a mais próxima do último falante conhecido
+                if len(haar_faces) > 1:
+                    # Define referência: último falante conhecido ou centro atual
+                    referencia = ultimo_falante_centro if ultimo_falante_centro is not None else np.array(centro_atual)
+                    
+                    # Escolhe a cabeça mais próxima da referência (evita centralizar no meio)
+                    def distancia_do_falante(face):
+                        cx, cy, w_head, h_head, x_orig, y_orig, w_orig, h_orig = face
+                        centro_face = np.array([cx, cy])
+                        distancia = np.linalg.norm(centro_face - referencia)
+                        return distancia
+                    
+                    melhor_face = min(haar_faces, key=distancia_do_falante)
+                    centro_haar = (melhor_face[0], melhor_face[1])
+                else:
+                    # Se há apenas uma cabeça, usa ela diretamente
+                    melhor_face = haar_faces[0]
+                    centro_haar = (melhor_face[0], melhor_face[1])
+                
                 centro_detectado_debug = centro_haar
                 
                 # Define centro_fallback se ainda não foi definido (primeiro frame com cabeça)
