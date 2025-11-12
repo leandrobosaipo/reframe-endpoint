@@ -51,6 +51,7 @@ def reframe_video(input_path: str,
     activity_hist = deque(maxlen=15)
     centro_atual  = (width // 2, height // 2)
     centro_antigo = np.array(centro_atual)
+    centro_fallback = None  # rosto inicial para fallback quando não há falante detectado
 
     faces_detected_sum = 0
 
@@ -78,6 +79,12 @@ def reframe_video(input_path: str,
                 centro     = np.mean(pts, axis=0)
                 candidatos.append((centro, abertura))
 
+            # Define centro_fallback no primeiro frame com rostos detectados
+            if centro_fallback is None and candidatos:
+                # Escolhe o rosto mais próximo do centro horizontal como fallback
+                idx_fallback = np.argmin([abs(c[0][0] - width//2) for c in candidatos])
+                centro_fallback = np.array(candidatos[idx_fallback][0])
+
             max_faces = max(len(c) for c in [candidatos] + list(activity_hist)) if activity_hist else len(candidatos)
             atual = [a for _, a in candidatos] + [0.0] * (max_faces - len(candidatos))
             activity_hist.append(atual)
@@ -90,7 +97,11 @@ def reframe_video(input_path: str,
                 idx = np.argmin([abs(c[0][0] - width//2) for c in candidatos])
 
             centro_atual = candidatos[idx][0]
-        # else: mantém último falante (centro_atual)
+        else:
+            # Quando não há rostos detectados, usa centro_fallback se disponível
+            if centro_fallback is not None:
+                centro_atual = tuple(centro_fallback)
+            # Se não há fallback definido ainda, mantém centro_atual (que pode ser o centro da tela inicialmente)
 
         # suavização do corte
         centro_atual = centro_antigo + 0.12 * (np.array(centro_atual) - np.array(centro_antigo))
