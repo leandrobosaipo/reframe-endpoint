@@ -35,10 +35,23 @@ swagger_config = {
     "specs_route": "/docs"
 }
 
-# Determina o host correto para o Swagger (navegador não consegue usar 0.0.0.0)
-_swagger_host = Config.HOST
-if _swagger_host == "0.0.0.0":
-    _swagger_host = "127.0.0.1"
+# Configura o host/base URL do Swagger
+# Prioriza PUBLIC_BASE_URL se definido (para deploy em Easypanel/VPS)
+# Caso contrário, usa comportamento padrão (localhost)
+if Config.PUBLIC_BASE_URL:
+    # Usa URL pública configurada (ex: https://apis-reframe-endpoint.mhcqvd.easypanel.host)
+    parsed_url = urlparse(Config.PUBLIC_BASE_URL)
+    swagger_host = parsed_url.netloc  # Remove http:// ou https://
+    swagger_schemes = [parsed_url.scheme] if parsed_url.scheme else ["https"]
+    swagger_base_path = parsed_url.path if parsed_url.path else "/"
+else:
+    # Comportamento padrão para desenvolvimento local
+    _swagger_host = Config.HOST
+    if _swagger_host == "0.0.0.0":
+        _swagger_host = "127.0.0.1"
+    swagger_host = f"{_swagger_host}:{Config.PORT}"
+    swagger_schemes = ["http", "https"]
+    swagger_base_path = "/"
 
 swagger_template = {
     "swagger": "2.0",
@@ -50,9 +63,9 @@ swagger_template = {
             "name": "API Support"
         }
     },
-    "host": f"{_swagger_host}:{Config.PORT}",
-    "basePath": "/",
-    "schemes": ["http", "https"],
+    "host": swagger_host,
+    "basePath": swagger_base_path,
+    "schemes": swagger_schemes,
     "securityDefinitions": {
         "ApiTokenAuth": {
             "type": "apiKey",

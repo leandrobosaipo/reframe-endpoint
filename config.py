@@ -26,6 +26,11 @@ class Config:
     HOST = os.getenv("HOST", "0.0.0.0")
     PORT = int(os.getenv("PORT", "8080"))
     
+    # URL pública para Swagger (usado quando acessado remotamente)
+    # Exemplo: https://apis-reframe-endpoint.mhcqvd.easypanel.host
+    # Se não definido, usa comportamento padrão (localhost)
+    PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+    
     # Workers e fila
     MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
     

@@ -66,6 +66,10 @@ SPACES_SECRET=sua-secret-key
 # Configuração
 MAX_WORKERS=2
 OUTPUT_PREFIX=reframes
+
+# URL pública para Swagger (opcional - apenas para desenvolvimento local com acesso remoto)
+# Deixe em branco para desenvolvimento local padrão
+# PUBLIC_BASE_URL=http://localhost:8080
 ```
 
 ### 5. Execute o servidor
@@ -181,13 +185,36 @@ Testa a conectividade com DigitalOcean Spaces.
    OUTPUT_PREFIX=reframes
    ```
 
-3. **Configure o build:**
+3. **Configure PUBLIC_BASE_URL (IMPORTANTE para Swagger funcionar corretamente):**
+   
+   **Passo a passo:**
+   
+   a) Após fazer o deploy inicial, o Easypanel fornecerá uma URL pública para sua aplicação.
+      Exemplo: `https://apis-reframe-endpoint.mhcqvd.easypanel.host`
+   
+   b) Copie essa URL completa (incluindo `https://`)
+   
+   c) No painel do Easypanel, vá em **"Environment Variables"** ou **"Variables"**
+   
+   d) Adicione uma nova variável:
+      - **Nome:** `PUBLIC_BASE_URL`
+      - **Valor:** Cole a URL completa que você copiou (ex: `https://apis-reframe-endpoint.mhcqvd.easypanel.host`)
+   
+   e) Salve e faça um novo deploy (ou reinicie o container)
+   
+   **Por que isso é necessário?**
+   - O Swagger UI precisa saber qual URL usar para fazer requisições à API
+   - Sem essa configuração, o Swagger tentará usar `127.0.0.1` (localhost), que não funciona quando você acessa de outro computador
+   - Com `PUBLIC_BASE_URL` configurado, o Swagger usará a URL pública correta
+
+4. **Configure o build:**
    - Build System: Nixpacks (automático)
    - Porta: 8080
 
-4. **Deploy:**
+5. **Deploy:**
    - Easypanel detecta o `Procfile` e `nixpacks.toml`
    - Build automático via GitHub push
+   - Após o deploy, configure `PUBLIC_BASE_URL` conforme o passo 3 acima
 
 ## 📝 Exemplo de Uso
 
@@ -258,6 +285,22 @@ SPACES_CDN_BASE=https://cdn.seudominio.com
 ```
 
 ## 🐛 Troubleshooting
+
+### Erro: "Failed to fetch" no Swagger UI
+**Sintoma:** Ao acessar `/docs` no Swagger, os endpoints retornam "Failed to fetch"
+
+**Causa:** O Swagger está configurado para usar `127.0.0.1` em vez da URL pública
+
+**Solução:**
+1. Verifique se a variável `PUBLIC_BASE_URL` está configurada no Easypanel
+2. O valor deve ser a URL completa da sua aplicação (ex: `https://apis-reframe-endpoint.mhcqvd.easypanel.host`)
+3. Reinicie o container após adicionar a variável
+4. Acesse `/docs` novamente - o Swagger deve funcionar corretamente
+
+**Como encontrar a URL correta:**
+- No painel do Easypanel, vá até sua aplicação
+- A URL pública está visível no topo da página ou na seção "Domains"
+- Copie a URL completa (incluindo `https://`) e use como valor de `PUBLIC_BASE_URL`
 
 ### Erro: "gunicorn: command not found"
 ```bash
