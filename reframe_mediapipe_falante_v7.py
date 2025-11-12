@@ -10,6 +10,33 @@ from collections import deque
 
 mp_face_mesh = mp.solutions.face_mesh
 
+def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile):
+    """
+    Detecta rostos usando Haar Cascades como fallback.
+    Retorna lista de tuplas (centro_x, centro_y, largura, altura).
+    """
+    faces = []
+    
+    # Detecta rostos frontais
+    frontal_faces = cascade_frontal.detectMultiScale(
+        frame_gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    )
+    for (x, y, w, h) in frontal_faces:
+        centro_x = x + w // 2
+        centro_y = y + h // 2
+        faces.append((centro_x, centro_y, w, h))
+    
+    # Detecta rostos de perfil
+    profile_faces = cascade_profile.detectMultiScale(
+        frame_gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    )
+    for (x, y, w, h) in profile_faces:
+        centro_x = x + w // 2
+        centro_y = y + h // 2
+        faces.append((centro_x, centro_y, w, h))
+    
+    return faces
+
 def _mux_audio(video_temp, source_with_audio, output_final):
     # copia o vídeo gerado e pega o áudio do original (sem re-encode adicional)
     subprocess.run([
@@ -45,6 +72,15 @@ def reframe_video(input_path: str,
     face_mesh = mp_face_mesh.FaceMesh(
         static_image_mode=False, max_num_faces=4, refine_landmarks=True,
         min_detection_confidence=0.5, min_tracking_confidence=0.5
+    )
+
+    # Carrega Haar Cascades para fallback de detecção de rostos de perfil
+    cascade_path = cv2.data.haarcascades
+    cascade_frontal = cv2.CascadeClassifier(
+        os.path.join(cascade_path, 'haarcascade_frontalface_default.xml')
+    )
+    cascade_profile = cv2.CascadeClassifier(
+        os.path.join(cascade_path, 'haarcascade_profileface.xml')
     )
 
     # histórico para decidir falante
@@ -98,8 +134,31 @@ def reframe_video(input_path: str,
 
             centro_atual = candidatos[idx][0]
         else:
-            # Quando não há rostos detectados, usa centro_fallback se disponível
-            if centro_fallback is not None:
+            # Fallback: tenta detectar rostos usando Haar Cascades quando MediaPipe falha
+            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            haar_faces = _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile)
+            
+            if haar_faces:
+                faces_detected_sum += len(haar_faces)
+                # Escolhe a maior face ou a mais próxima do centro horizontal
+                # Prioriza tamanho (largura * altura) e depois proximidade do centro
+                def score_face(face):
+                    cx, cy, w, h = face
+                    size_score = w * h
+                    center_score = 1.0 / (1.0 + abs(cx - width//2) / width)
+                    return size_score * (1.0 + center_score)
+                
+                melhor_face = max(haar_faces, key=score_face)
+                centro_haar = (melhor_face[0], melhor_face[1])
+                
+                # Define centro_fallback se ainda não foi definido
+                if centro_fallback is None:
+                    centro_fallback = np.array(centro_haar)
+                
+                # Usa o centro detectado pelo Haar
+                centro_atual = centro_haar
+            elif centro_fallback is not None:
+                # Quando não há rostos detectados por nenhum método, usa centro_fallback
                 centro_atual = tuple(centro_fallback)
             # Se não há fallback definido ainda, mantém centro_atual (que pode ser o centro da tela inicialmente)
 
