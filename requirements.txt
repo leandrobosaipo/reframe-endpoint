@@ -1,4 +1,5 @@
 flask
+flask-cors
 requests
 mediapipe
 opencv-python-headless
@@ -6,3 +7,4 @@ numpy
 boto3
 python-dotenv
 gunicorn
+flasgger

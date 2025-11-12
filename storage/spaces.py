@@ -69,3 +69,19 @@ def upload_public(file_path: str, key: str) -> str:
             CacheControl="public, max-age=31536000, immutable"
         )
     return public_url_for(key)
+
+def delete_public(key: str) -> bool:
+    """
+    Remove um objeto público do Spaces.
+    
+    Args:
+        key: Chave do objeto no Spaces
+        
+    Returns:
+        True se deletado com sucesso, False caso contrário
+    """
+    try:
+        _s3.delete_object(Bucket=SPACES_BUCKET, Key=key)
+        return True
+    except Exception:
+        return False
