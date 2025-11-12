@@ -89,7 +89,17 @@ def verificar_token():
     # Pula verificação para endpoints públicos e OPTIONS (preflight CORS)
     if request.method == 'OPTIONS':
         return
-    public_endpoints = ['root', 'get_swagger_ui', 'get_apispec_json', 'metrics_health']
+    public_endpoints = [
+        'root', 
+        'get_swagger_ui', 
+        'get_apispec_json', 
+        'metrics_health',
+        'metrics_kpi',        # GET /metrics/kpi - usado pelo dashboard
+        'metrics_queue',      # GET /metrics/queue - usado pelo dashboard
+        'metrics_history',   # GET /metrics/history - usado pelo dashboard
+        'list_jobs',         # GET /v1/video/jobs - usado pelo dashboard
+        'list_uploads'       # GET /v1/uploads - usado pelo dashboard
+    ]
     if request.endpoint in public_endpoints:
         return
     
