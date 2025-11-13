@@ -6,6 +6,7 @@ import subprocess
 import os
 import tempfile
 import time
+import json
 from collections import deque
 
 mp_face_mesh = mp.solutions.face_mesh
@@ -127,17 +128,201 @@ def _detect_faces_haar(frame_gray, cascade_frontal, cascade_profile, height_fram
     
     return faces
 
-def _mux_audio(video_temp, source_with_audio, output_final):
-    # copia o vídeo gerado e pega o áudio do original (sem re-encode adicional)
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-i", video_temp,
-        "-i", source_with_audio,
-        "-c:v", "copy",
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-        "-shortest", output_final
-    ], check=True)
+def _has_audio(video_path: str) -> bool:
+    """
+    Verifica se o vídeo possui stream de áudio usando ffprobe.
+    Retorna True se houver pelo menos um stream de áudio, False caso contrário.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0",
+                video_path
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=10
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+def _get_video_metadata(video_path: str) -> dict:
+    """
+    Extrai metadados completos do vídeo usando ffprobe.
+    Retorna dict com informações de codec, duração, streams, etc.
+    """
+    metadata = {
+        "has_audio": False,
+        "has_video": False,
+        "duration": None,
+        "video_codec": None,
+        "audio_codec": None,
+        "video_bitrate": None,
+        "audio_bitrate": None,
+        "width": None,
+        "height": None,
+        "fps": None,
+        "audio_sample_rate": None,
+        "audio_channels": None,
+        "streams_count": 0
+    }
+    
+    try:
+        # Obtém informações gerais do formato
+        format_result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_format",
+                "-of", "json", video_path
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=10
+        )
+        
+        if format_result.returncode == 0:
+            format_data = json.loads(format_result.stdout)
+            if "format" in format_data:
+                duration_str = format_data["format"].get("duration")
+                if duration_str:
+                    try:
+                        metadata["duration"] = float(duration_str)
+                    except (ValueError, TypeError):
+                        pass
+        
+        # Obtém informações dos streams
+        streams_result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_streams",
+                "-of", "json", video_path
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=10
+        )
+        
+        if streams_result.returncode == 0:
+            streams_data = json.loads(streams_result.stdout)
+            if "streams" in streams_data:
+                streams = streams_data["streams"]
+                metadata["streams_count"] = len(streams)
+                
+                for stream in streams:
+                    codec_type = stream.get("codec_type", "")
+                    
+                    if codec_type == "video":
+                        metadata["has_video"] = True
+                        metadata["video_codec"] = stream.get("codec_name")
+                        metadata["width"] = stream.get("width")
+                        metadata["height"] = stream.get("height")
+                        
+                        # FPS pode estar em r_frame_rate ou avg_frame_rate
+                        fps_str = stream.get("r_frame_rate") or stream.get("avg_frame_rate", "")
+                        if fps_str and "/" in fps_str:
+                            try:
+                                num, den = map(int, fps_str.split("/"))
+                                if den > 0:
+                                    metadata["fps"] = num / den
+                            except (ValueError, ZeroDivisionError):
+                                pass
+                        
+                        bitrate = stream.get("bit_rate")
+                        if bitrate:
+                            try:
+                                metadata["video_bitrate"] = int(bitrate)
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    elif codec_type == "audio":
+                        metadata["has_audio"] = True
+                        metadata["audio_codec"] = stream.get("codec_name")
+                        
+                        sample_rate = stream.get("sample_rate")
+                        if sample_rate:
+                            try:
+                                metadata["audio_sample_rate"] = int(sample_rate)
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        channels = stream.get("channels")
+                        if channels:
+                            try:
+                                metadata["audio_channels"] = int(channels)
+                            except (ValueError, TypeError):
+                                pass
+                        
+                        bitrate = stream.get("bit_rate")
+                        if bitrate:
+                            try:
+                                metadata["audio_bitrate"] = int(bitrate)
+                            except (ValueError, TypeError):
+                                pass
+    
+    except Exception:
+        # Em caso de erro, retorna metadata parcial
+        pass
+    
+    return metadata
+
+def _mux_audio(video_temp: str, source_with_audio: str, output_final: str) -> dict:
+    """
+    Faz mux de vídeo e áudio. Se o source não tiver áudio, gera áudio silencioso.
+    Retorna dict com informações sobre o processo de mux.
+    """
+    mux_info = {
+        "has_source_audio": False,
+        "audio_source": None,
+        "error": None
+    }
+    
+    try:
+        # Verifica se o source tem áudio
+        has_audio = _has_audio(source_with_audio)
+        mux_info["has_source_audio"] = has_audio
+        
+        if has_audio:
+            # Mux normal: vídeo + áudio do source
+            mux_info["audio_source"] = "original"
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-i", video_temp,
+                "-i", source_with_audio,
+                "-c:v", "copy",
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-shortest", output_final
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        else:
+            # Gera áudio silencioso quando não há áudio no source
+            mux_info["audio_source"] = "generated_silent"
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-i", video_temp,
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest", output_final
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    
+    except subprocess.CalledProcessError as e:
+        error_msg = f"Erro no mux de áudio: {e}"
+        if e.stderr:
+            error_msg += f" - {e.stderr.decode('utf-8', errors='ignore')[:200]}"
+        mux_info["error"] = error_msg
+        raise RuntimeError(error_msg) from e
+    except Exception as e:
+        error_msg = f"Erro inesperado no mux: {str(e)}"
+        mux_info["error"] = error_msg
+        raise RuntimeError(error_msg) from e
+    
+    return mux_info
 
 def _draw_debug_overlays(frame, results, haar_faces, centro_atual, centro_detectado, width, height, debug_info=None):
     """
@@ -391,10 +576,16 @@ def reframe_video(input_path: str,
     if out_debug:
         out_debug.release()
 
+    # Coleta metadados do input antes do mux
+    input_metadata = _get_video_metadata(input_path)
+
     # mux de áudio
     if progress_cb: progress_cb(stage="muxing", progress=0.0, meta={})
-    _mux_audio(tmp_video, input_path, output_path)
+    mux_info = _mux_audio(tmp_video, input_path, output_path)
     if progress_cb: progress_cb(stage="muxing", progress=1.0, meta={})
+
+    # Coleta metadados do output final
+    output_metadata = _get_video_metadata(output_path)
 
     try: os.remove(tmp_video)
     except: pass
@@ -403,5 +594,8 @@ def reframe_video(input_path: str,
         "frames_processed": total,
         "fps": float(fps),
         "faces_detected_sum": int(faces_detected_sum),
-        "status": "success"
+        "status": "success",
+        "input_metadata": input_metadata,
+        "output_metadata": output_metadata,
+        "mux_info": mux_info
     }

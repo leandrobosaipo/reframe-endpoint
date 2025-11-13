@@ -1,5 +1,5 @@
 # app.py
-import os, io, time, json, uuid, queue, threading, tempfile, shutil
+import os, io, time, json, uuid, queue, threading, tempfile, shutil, subprocess
 from urllib.parse import urlparse, unquote
 import requests
 from flask import Flask, request, jsonify, send_file, abort
@@ -344,7 +344,26 @@ def _worker() -> None:
                     pass
 
         except Exception as e:
-            _set(job_id, status="error", error=str(e), stage="error")
+            # Captura informações detalhadas do erro
+            error_details = {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "stage": job.get("stage", "unknown")
+            }
+            
+            # Se for erro de RuntimeError (mux), adiciona contexto adicional
+            if isinstance(e, RuntimeError) and "mux" in str(e).lower():
+                error_details["error_category"] = "mux_error"
+                error_details["message"] = "Falha no processo de composição de vídeo e áudio"
+            elif isinstance(e, subprocess.CalledProcessError):
+                error_details["error_category"] = "subprocess_error"
+                error_details["returncode"] = e.returncode
+                if hasattr(e, 'stderr') and e.stderr:
+                    error_details["stderr"] = e.stderr.decode('utf-8', errors='ignore')[:500]
+            else:
+                error_details["error_category"] = "unknown_error"
+            
+            _set(job_id, status="error", stage="error", **error_details)
         finally:
             # Limpa arquivos temporários usando context managers
             try:
