@@ -2,12 +2,18 @@
 
 ## Configuração Base
 ```bash
-# URL do servidor local
+# URL do servidor (ajuste conforme ambiente)
+# Local:
 BASE_URL="http://localhost:8080"
+
+# Produção (Easypanel):
+# BASE_URL="https://codigo5-reframe-endpoint.ujhifl.easypanel.host"
 
 # Token de autenticação (ajuste conforme necessário)
 API_TOKEN="seu_token_aqui"
 ```
+
+**Nota:** O Swagger agora detecta automaticamente o domínio correto. Se estiver acessando via domínio público, o Swagger UI usará automaticamente a URL pública nos exemplos de curl.
 
 ---
 

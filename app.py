@@ -38,49 +38,106 @@ swagger_config = {
 # Configura o host/base URL do Swagger
 # Prioriza PUBLIC_BASE_URL se definido (para deploy em Easypanel/VPS)
 # Caso contrário, usa comportamento padrão (localhost)
-if Config.PUBLIC_BASE_URL:
-    # Usa URL pública configurada (ex: https://apis-reframe-endpoint.mhcqvd.easypanel.host)
-    parsed_url = urlparse(Config.PUBLIC_BASE_URL)
-    swagger_host = parsed_url.netloc  # Remove http:// ou https://
-    swagger_schemes = [parsed_url.scheme] if parsed_url.scheme else ["https"]
-    swagger_base_path = parsed_url.path if parsed_url.path else "/"
-else:
+def get_swagger_host():
+    """
+    Retorna o host correto para o Swagger baseado na configuração.
+    Prioriza PUBLIC_BASE_URL, depois tenta detectar automaticamente do request.
+    """
+    if Config.PUBLIC_BASE_URL:
+        parsed_url = urlparse(Config.PUBLIC_BASE_URL)
+        return parsed_url.netloc  # Remove http:// ou https://
+    
     # Comportamento padrão para desenvolvimento local
     _swagger_host = Config.HOST
     if _swagger_host == "0.0.0.0":
         _swagger_host = "127.0.0.1"
-    swagger_host = f"{_swagger_host}:{Config.PORT}"
-    swagger_schemes = ["http", "https"]
-    swagger_base_path = "/"
+    return f"{_swagger_host}:{Config.PORT}"
 
-swagger_template = {
-    "swagger": "2.0",
-    "info": {
-        "title": "Reframe Endpoint API",
-        "description": "API para reenquadramento de vídeos de 16:9 para 9:16 com foco automático no falante",
-        "version": Config.APP_VERSION,
-        "contact": {
-            "name": "API Support"
-        }
-    },
-    "host": swagger_host,
-    "basePath": swagger_base_path,
-    "schemes": swagger_schemes,
-    "securityDefinitions": {
-        "ApiTokenAuth": {
-            "type": "apiKey",
-            "name": "X-Api-Token",
-            "in": "header"
-        }
-    },
-    "security": [
-        {
-            "ApiTokenAuth": []
-        }
-    ]
-}
+def get_swagger_schemes():
+    """Retorna os schemes corretos para o Swagger"""
+    if Config.PUBLIC_BASE_URL:
+        parsed_url = urlparse(Config.PUBLIC_BASE_URL)
+        return [parsed_url.scheme] if parsed_url.scheme else ["https"]
+    return ["http", "https"]
 
-swagger = Swagger(app, config=swagger_config, template=swagger_template)
+def get_swagger_base_path():
+    """Retorna o basePath correto para o Swagger"""
+    if Config.PUBLIC_BASE_URL:
+        parsed_url = urlparse(Config.PUBLIC_BASE_URL)
+        return parsed_url.path if parsed_url.path else "/"
+    return "/"
+
+swagger_host = get_swagger_host()
+swagger_schemes = get_swagger_schemes()
+swagger_base_path = get_swagger_base_path()
+
+# Função factory para criar template do Swagger dinamicamente
+def get_swagger_template():
+    """
+    Retorna o template do Swagger com host dinâmico baseado no request atual.
+    Isso permite que o Swagger use o domínio correto mesmo sem PUBLIC_BASE_URL configurado.
+    """
+    # Detecta host dinamicamente
+    current_host = swagger_host
+    current_schemes = swagger_schemes
+    
+    try:
+        # Tenta usar o host do request atual (funciona quando acessado via navegador)
+        if hasattr(request, 'host') and request.host:
+            host = request.host
+            # Se o host não é localhost/127.0.0.1, usa ele
+            if host not in ["127.0.0.1", "localhost", "0.0.0.0"]:
+                # Remove porta se presente (Swagger 2.0 pode precisar da porta dependendo do contexto)
+                # Mas vamos manter a porta se for diferente de 80/443
+                if ":" in host:
+                    host_parts = host.split(":")
+                    port = host_parts[1]
+                    # Se porta padrão (80/443), remove
+                    if port in ["80", "443"]:
+                        current_host = host_parts[0]
+                    else:
+                        current_host = host
+                else:
+                    current_host = host
+                
+                # Detecta scheme do request
+                if request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https':
+                    current_schemes = ["https"]
+                else:
+                    current_schemes = ["http"]
+    except RuntimeError:
+        # Se não há request context (inicialização), usa o configurado
+        pass
+    
+    return {
+        "swagger": "2.0",
+        "info": {
+            "title": "Reframe Endpoint API",
+            "description": "API para reenquadramento de vídeos de 16:9 para 9:16 com foco automático no falante",
+            "version": Config.APP_VERSION,
+            "contact": {
+                "name": "API Support"
+            }
+        },
+        "host": current_host,
+        "basePath": swagger_base_path,
+        "schemes": current_schemes,
+        "securityDefinitions": {
+            "ApiTokenAuth": {
+                "type": "apiKey",
+                "name": "X-Api-Token",
+                "in": "header"
+            }
+        },
+        "security": [
+            {
+                "ApiTokenAuth": []
+            }
+        ]
+    }
+
+swagger_template = get_swagger_template()
+swagger = Swagger(app, config=swagger_config, template=get_swagger_template)
 
 # -------- Autenticação --------
 @app.before_request
