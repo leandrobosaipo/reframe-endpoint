@@ -137,7 +137,7 @@ def get_swagger_template():
     }
 
 swagger_template = get_swagger_template()
-swagger = Swagger(app, config=swagger_config, template=get_swagger_template)
+swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
 # -------- Autenticação --------
 @app.before_request
